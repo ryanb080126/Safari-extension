@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "Study Buddy",
+  "version": "1.0.0",
+  "description": "Toggle Claude to watch the page you're on. It highlights the answer to multiple-choice questions and explains why in a small chat bubble.",
+  "icons": {
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "48": "icons/icon-48.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "permissions": [
+    "storage",
+    "activeTab",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "commands": {
+    "toggle-watch": {
+      "suggested_key": {
+        "default": "Alt+Shift+W",
+        "mac": "MacCtrl+Shift+W"
+      },
+      "description": "Start or stop watching the current tab"
+    }
+  }
+}

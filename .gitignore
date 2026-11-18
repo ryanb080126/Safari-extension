@@ -1,0 +1,4 @@
+node_modules/
+extension/background.js
+.DS_Store
+*.xcodeproj/xcuserdata/

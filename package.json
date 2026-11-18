@@ -1,0 +1,17 @@
+{
+  "name": "study-buddy-safari",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Safari Web Extension: toggle Claude to watch the page and highlight answers with short explanations.",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.10.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}
