@@ -9,6 +9,7 @@ const api = globalThis.browser ?? globalThis.chrome;
 
 const DEFAULT_SETTINGS = {
   apiKey: "",
+  workspaceId: "",
   model: "claude-opus-5-5",
   effort: "medium",
   useScreenshot: true,
@@ -91,6 +92,8 @@ async function analyze({ elements, url, title }, tab) {
     apiKey: settings.apiKey,
     // The key is the user's own, stored only in this extension's local storage.
     dangerouslyAllowBrowser: true,
+    // Personal keys not tied to one workspace must name the workspace on each request.
+    defaultHeaders: settings.workspaceId ? { "anthropic-workspace-id": settings.workspaceId } : undefined,
   });
 
   const screenshot = settings.useScreenshot ? await captureScreenshot(tab) : null;

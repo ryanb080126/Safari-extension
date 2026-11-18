@@ -1,7 +1,7 @@
 const api = globalThis.browser ?? globalThis.chrome;
 const $ = (id) => document.getElementById(id);
 
-const DEFAULTS = { apiKey: "", model: "claude-opus-5-5", effort: "medium", useScreenshot: true };
+const DEFAULTS = { apiKey: "", workspaceId: "", model: "claude-opus-5-5", effort: "medium", useScreenshot: true };
 
 async function currentTab() {
   const [tab] = await api.tabs.query({ active: true, currentWindow: true });
@@ -16,6 +16,7 @@ function showStatus(text, isError = false) {
 async function init() {
   const settings = { ...DEFAULTS, ...(await api.storage.local.get(Object.keys(DEFAULTS))) };
   $("apiKey").value = settings.apiKey;
+  $("workspaceId").value = settings.workspaceId;
   $("model").value = settings.model;
   $("effort").value = settings.effort;
   $("useScreenshot").checked = settings.useScreenshot;
@@ -55,7 +56,8 @@ $("analyze").addEventListener("click", async () => {
 
 $("save").addEventListener("click", async () => {
   await api.storage.local.set({
-    apiKey: $("apiKey").value.trim(),
+    apiKey: $("apiKey").value.replace(/\s+/g, ""),
+    workspaceId: $("workspaceId").value.trim(),
     model: $("model").value,
     effort: $("effort").value,
     useScreenshot: $("useScreenshot").checked,

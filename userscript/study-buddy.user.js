@@ -1,7 +1,9 @@
 // ==UserScript==
 // @name         Study Buddy
 // @description  Tap the green button to have Claude watch the page. It rings the correct option of visible questions and explains why in a small bubble.
-// @version      1.0.0
+// @version      1.1.0
+// @updateURL    https://raw.githubusercontent.com/ryanb080126/Safari-extension/claude/safari-screenshare-extension-gh5ygr/userscript/study-buddy.user.js
+// @downloadURL  https://raw.githubusercontent.com/ryanb080126/Safari-extension/claude/safari-screenshare-extension-gh5ygr/userscript/study-buddy.user.js
 // @match        *://*/*
 // @exclude      *://*.anthropic.com/*
 // @grant        GM.xmlHttpRequest
@@ -28,7 +30,7 @@
   const DEBOUNCE_MS = 1500;
   const WATCH_KEY = "studyBuddyWatching"; // sessionStorage: stays on for this tab + site
 
-  const DEFAULTS = { apiKey: "", model: "claude-opus-5-5", effort: "medium" };
+  const DEFAULTS = { apiKey: "", workspaceId: "", model: "claude-opus-5-5", effort: "medium" };
   const settings = { ...DEFAULTS };
   for (const k of Object.keys(DEFAULTS)) settings[k] = await GM.getValue(k, DEFAULTS[k]);
 
@@ -129,6 +131,8 @@ If no questions are visible, return an empty list. Only use ids that appear in t
       }
       .pill { padding: 0 16px; max-width: 70vw; }
       .pill .label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .pill.error { border-radius: 14px; padding-block: 8px; }
+      .pill.error .label { white-space: normal; }
       .gear { width: 44px; justify-content: center; font-size: 18px; }
       .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
       .pill.on .dot { background: var(--accent); }
@@ -152,12 +156,14 @@ If no questions are visible, return an empty list. Only use ids that appear in t
         color: #fff; font-size: 15px; font-weight: 600; cursor: pointer;
       }
       .panel .hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+      .panel .opt { color: var(--muted); font-size: 12px; }
     </style>
     <div class="layer"></div>
     <div class="dock"></div>
     <div class="panel">
       <h2>Study Buddy settings</h2>
       <label>Anthropic API key <input type="password" class="key" placeholder="sk-ant-…" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+      <label>Workspace ID <span class="opt">(usually filled in for you)</span> <input type="text" class="ws" placeholder="wrkspc_…" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
       <label>Model
         <select class="model">
           <option value="claude-opus-5-5">Claude Opus 5.5 (most accurate)</option>
@@ -189,12 +195,14 @@ If no questions are visible, return an empty list. Only use ids that appear in t
 
   $(".gear").addEventListener("click", () => {
     $(".key").value = settings.apiKey;
+    $(".ws").value = settings.workspaceId;
     $(".model").value = settings.model;
     $(".effort").value = settings.effort;
     panel.classList.toggle("open");
   });
   $(".save").addEventListener("click", async () => {
-    settings.apiKey = $(".key").value.trim();
+    settings.apiKey = $(".key").value.replace(/\s+/g, "");
+    settings.workspaceId = $(".ws").value.trim();
     settings.model = $(".model").value;
     settings.effort = $(".effort").value;
     for (const k of Object.keys(DEFAULTS)) await GM.setValue(k, settings[k]);
@@ -262,13 +270,13 @@ If no questions are visible, return an empty list. Only use ids that appear in t
   }
 
   // ---------- Claude API ----------
-  function post(url, headers, body) {
+  function request(method, url, headers, body) {
     return new Promise((resolve, reject) => {
       GM.xmlHttpRequest({
-        method: "POST",
+        method,
         url,
         headers,
-        data: JSON.stringify(body),
+        data: body === undefined ? undefined : JSON.stringify(body),
         onload: (res) => resolve({ status: res.status, text: res.responseText ?? res.response }),
         onerror: () => reject(new Error("Couldn't reach the Claude API. Check your connection.")),
         ontimeout: () => reject(new Error("The Claude API took too long to answer.")),
@@ -276,16 +284,55 @@ If no questions are visible, return an empty list. Only use ids that appear in t
     });
   }
 
-  async function askClaude(elements) {
+  function apiHeaders() {
+    const headers = {
+      "content-type": "application/json",
+      authorization: `Bearer ${settings.apiKey}`,
+      "anthropic-version": "2023-06-01",
+      // Userscripts sends the request from inside Safari, so the API treats it as a
+      // browser request, which it only accepts with this header.
+      "anthropic-dangerous-direct-browser-access": "true",
+    };
+    if (settings.workspaceId) headers["anthropic-workspace-id"] = settings.workspaceId;
+    return headers;
+  }
+
+  function parseJson(text) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
+  }
+
+  // Personal keys (sk-ant-usr-…) that aren't tied to one workspace need a workspace
+  // ID on every request. Try to look it up once so the user doesn't have to.
+  async function findWorkspaceId() {
+    try {
+      const { status, text } = await request(
+        "GET",
+        "https://api.anthropic.com/v1/organizations/workspaces?include_default=true&limit=100",
+        apiHeaders(),
+      );
+      const list = status === 200 ? parseJson(text)?.data ?? [] : [];
+      const active = list.filter((w) => !w.archived_at);
+      const pick = active.find((w) => /default/i.test(w.name ?? "")) ?? (active.length === 1 ? active[0] : null);
+      return pick?.id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  function needsWorkspace(data) {
+    return /anthropic-workspace-id/i.test(data?.error?.message ?? "");
+  }
+
+  async function sendMessages(elements) {
     const elementList = elements.map((e) => `[${e.id}] ${e.text}`).join("\n");
-    const { status, text } = await post(
+    return request(
+      "POST",
       "https://api.anthropic.com/v1/messages",
-      {
-        "content-type": "application/json",
-        "x-api-key": settings.apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-beta": "server-side-fallback-2026-07-01",
-      },
+      { ...apiHeaders(), "anthropic-beta": "server-side-fallback-2026-07-01" },
       {
         model: settings.model,
         max_tokens: 16000,
@@ -300,16 +347,31 @@ If no questions are visible, return an empty list. Only use ids that appear in t
         ],
       },
     );
+  }
 
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      throw new Error(`Unexpected reply from the API (HTTP ${status}).`);
+  async function askClaude(elements) {
+    let { status, text } = await sendMessages(elements);
+    let data = parseJson(text);
+
+    if (status === 400 && needsWorkspace(data) && !settings.workspaceId) {
+      const id = await findWorkspaceId();
+      if (id) {
+        settings.workspaceId = id;
+        await GM.setValue("workspaceId", id);
+        ({ status, text } = await sendMessages(elements));
+        data = parseJson(text);
+      }
     }
-    if (status === 401) throw new Error("Your API key was rejected. Tap ⚙︎ to check it.");
+
+    if (!data) throw new Error(`Unexpected reply from the API (HTTP ${status}).`);
+    const apiMessage = data?.error?.message ?? "";
+    if (status === 400 && needsWorkspace(data)) {
+      panel.classList.add("open");
+      throw new Error("Needs a workspace ID. Tap ⚙︎ and fill it in (see the setup page).");
+    }
+    if (status === 401) throw new Error(`Key not accepted: ${apiMessage || "check it under ⚙︎."}`);
     if (status === 429) throw new Error("Rate limited. Will try again on the next change.");
-    if (status >= 400) throw new Error(data?.error?.message || `Claude API error (HTTP ${status}).`);
+    if (status >= 400) throw new Error(apiMessage || `Claude API error (HTTP ${status}).`);
     if (data.stop_reason === "refusal") throw new Error("Claude declined to answer this page.");
     if (data.stop_reason === "max_tokens") throw new Error("Answer was cut off. Scroll so fewer questions are visible.");
 
