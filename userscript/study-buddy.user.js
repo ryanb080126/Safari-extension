@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Study Buddy
 // @description  Tap the green button to have Claude watch the page. It rings the correct option of visible questions and explains why in a small bubble.
-// @version      1.1.0
+// @version      1.2.0
 // @updateURL    https://raw.githubusercontent.com/ryanb080126/Safari-extension/claude/safari-screenshare-extension-gh5ygr/userscript/study-buddy.user.js
 // @downloadURL  https://raw.githubusercontent.com/ryanb080126/Safari-extension/claude/safari-screenshare-extension-gh5ygr/userscript/study-buddy.user.js
 // @match        *://*/*
@@ -21,8 +21,10 @@
 // so the page's own scripts never see your API key.
 
 (async () => {
-  if (window.__studyBuddyLoaded) return;
+  // Version 1.0 used this flag; setting it stops an old copy that loads after us.
   window.__studyBuddyLoaded = true;
+  if (window.__studyBuddyV2) return;
+  window.__studyBuddyV2 = true;
 
   const ID_ATTR = "data-sb-id";
   const MAX_ELEMENTS = 300;
@@ -88,7 +90,7 @@ If no questions are visible, return an empty list. Only use ids that appear in t
 
   // ---------- Overlay (shadow DOM so page styles can't break it) ----------
   const host = document.createElement("div");
-  host.setAttribute("data-study-buddy", "");
+  host.setAttribute("data-study-buddy", "2");
   host.style.cssText = "all: initial; position: fixed; inset: 0; pointer-events: none; z-index: 2147483647;";
   const shadow = host.attachShadow({ mode: "closed" });
   shadow.innerHTML = `
@@ -213,6 +215,14 @@ If no questions are visible, return an empty list. Only use ids that appear in t
   pill.addEventListener("click", () => setWatching(!watching));
 
   document.documentElement.appendChild(host);
+
+  // If an older copy of this script is still installed, hide its buttons so only
+  // this version shows (older copies can't use personal API keys).
+  function removeOldCopies() {
+    document.querySelectorAll('[data-study-buddy]:not([data-study-buddy="2"])').forEach((old) => old.remove());
+  }
+  removeOldCopies();
+  new MutationObserver(removeOldCopies).observe(document.documentElement, { childList: true });
 
   function setStatus(text, kind = "") {
     pill.className = `pill ${kind}`;
