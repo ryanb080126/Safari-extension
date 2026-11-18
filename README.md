@@ -12,7 +12,21 @@ Turn it on for a tab and Claude watches what's on screen. When a multiple-choice
 
 Low-confidence answers get a dashed ring. Click the × on a bubble to dismiss it, or click the pill to stop watching.
 
-## Setup (requires a Mac with Xcode)
+## Setup on iPad or iPhone (no Mac needed)
+
+You can't build a Safari extension on an iPad, so this version runs inside **Userscripts**, a free, open-source Safari extension. The script is `userscript/study-buddy.user.js`.
+
+1. Install **Userscripts** (by Justin Wasack) from the App Store.
+2. Open the Userscripts app once and pick a folder for your scripts (for example, a "Userscripts" folder in On My iPad).
+3. Turn it on in **Settings → Apps → Safari → Extensions → Userscripts**. Set **All Websites** to **Allow**.
+4. In Safari, open `userscript/study-buddy.user.js` in this GitHub repo and tap **Raw**. Then tap the **aA** (or puzzle-piece) button in the address bar, choose **Userscripts**, and tap **Install**.
+   - Another way: open the Userscripts popup on any page, tap **+** to create a new script, delete the template, paste in the contents of the file, and save.
+5. Open any page. A **Study Buddy** button and a **⚙︎** button appear in the bottom-right corner. Tap **⚙︎**, paste your Anthropic API key, and tap **Save**.
+6. Tap **Study Buddy** to start watching, and tap it again to stop. Watching stays on for that tab and site when the page reloads.
+
+Differences from the Mac version: it sends only the page text, not a screenshot, so it can't read questions that are inside images. There's also no keyboard shortcut.
+
+## Setup on a Mac (requires Xcode)
 
 Safari extensions have to be wrapped in a small macOS/iOS app, and Apple's converter does that for you.
 
@@ -50,6 +64,7 @@ extension/            the Safari Web Extension (this folder is what gets convert
   background.js       built output, not committed
   popup/              toggle and settings UI
   icons/
+userscript/           iPad/iPhone version (runs in the free Userscripts Safari extension)
 src/background.js     Claude API calls (@anthropic-ai/sdk), screenshots, per-tab watch state
 build.mjs             esbuild bundle step
 ```
