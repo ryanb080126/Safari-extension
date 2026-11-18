@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Study Buddy
 // @description  Tap the green button to have Claude watch the page. It rings the correct option of visible questions and explains why in a small bubble.
-// @version      1.2.0
+// @version      1.3.0
 // @updateURL    https://raw.githubusercontent.com/ryanb080126/Safari-extension/claude/safari-screenshare-extension-gh5ygr/userscript/study-buddy.user.js
 // @downloadURL  https://raw.githubusercontent.com/ryanb080126/Safari-extension/claude/safari-screenshare-extension-gh5ygr/userscript/study-buddy.user.js
 // @match        *://*/*
@@ -93,8 +93,16 @@ If no questions are visible, return an empty list. Only use ids that appear in t
   host.setAttribute("data-study-buddy", "2");
   host.style.cssText = "all: initial; position: fixed; inset: 0; pointer-events: none; z-index: 2147483647;";
   const shadow = host.attachShadow({ mode: "closed" });
-  shadow.innerHTML = `
-    <style>
+  // Built with DOM calls instead of innerHTML: sites like Google enforce "Trusted
+  // Types", which blocks innerHTML and would stop the script before it draws anything.
+  function h(tag, attrs = {}, ...children) {
+    const node = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+    for (const c of children) node.append(c);
+    return node;
+  }
+  const styleEl = document.createElement("style");
+  styleEl.textContent = `
       :host { --accent: #16a34a; --bg: #ffffff; --fg: #1f2937; --muted: #6b7280; --border: #e5e7eb; --field: #f9fafb; }
       @media (prefers-color-scheme: dark) {
         :host { --accent: #4ade80; --bg: #1f2937; --fg: #f3f4f6; --muted: #9ca3af; --border: #374151; --field: #111827; }
@@ -159,35 +167,48 @@ If no questions are visible, return an empty list. Only use ids that appear in t
       }
       .panel .hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
       .panel .opt { color: var(--muted); font-size: 12px; }
-    </style>
-    <div class="layer"></div>
-    <div class="dock"></div>
-    <div class="panel">
-      <h2>Study Buddy settings</h2>
-      <label>Anthropic API key <input type="password" class="key" placeholder="sk-ant-…" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
-      <label>Workspace ID <span class="opt">(usually filled in for you)</span> <input type="text" class="ws" placeholder="wrkspc_…" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
-      <label>Model
-        <select class="model">
-          <option value="claude-opus-5-5">Claude Opus 5.5 (most accurate)</option>
-          <option value="claude-sonnet-5-5">Claude Sonnet 5.5 (faster, cheaper)</option>
-          <option value="claude-haiku-5-5">Claude Haiku 5.5 (fastest, cheapest)</option>
-        </select>
-      </label>
-      <label>Effort
-        <select class="effort">
-          <option value="low">Low (quickest)</option>
-          <option value="medium">Medium</option>
-          <option value="high">High (most careful)</option>
-        </select>
-      </label>
-      <button class="save">Save</button>
-      <p class="hint">Your key is stored only in the Userscripts extension on this device.</p>
-    </div>
-    <div class="bar">
-      <button class="gear" title="Settings">⚙︎</button>
-      <button class="pill"><span class="dot"></span><span class="label">Study Buddy</span></button>
-    </div>
   `;
+  const opt = (value, text) => h("option", { value }, text);
+  const textInput = (cls, type, placeholder) =>
+    h("input", { class: cls, type, placeholder, autocomplete: "off", autocapitalize: "off", spellcheck: "false" });
+  shadow.append(
+    styleEl,
+    h("div", { class: "layer" }),
+    h("div", { class: "dock" }),
+    h(
+      "div",
+      { class: "panel" },
+      h("h2", {}, "Study Buddy settings"),
+      h("label", {}, "Anthropic API key ", textInput("key", "password", "sk-ant-…")),
+      h("label", {}, "Workspace ID ", h("span", { class: "opt" }, "(usually filled in for you)"), " ", textInput("ws", "text", "wrkspc_…")),
+      h(
+        "label",
+        {},
+        "Model",
+        h(
+          "select",
+          { class: "model" },
+          opt("claude-opus-5-5", "Claude Opus 5.5 (most accurate)"),
+          opt("claude-sonnet-5-5", "Claude Sonnet 5.5 (faster, cheaper)"),
+          opt("claude-haiku-5-5", "Claude Haiku 5.5 (fastest, cheapest)"),
+        ),
+      ),
+      h(
+        "label",
+        {},
+        "Effort",
+        h("select", { class: "effort" }, opt("low", "Low (quickest)"), opt("medium", "Medium"), opt("high", "High (most careful)")),
+      ),
+      h("button", { class: "save" }, "Save"),
+      h("p", { class: "hint" }, "Your key is stored only in the Userscripts extension on this device."),
+    ),
+    h(
+      "div",
+      { class: "bar" },
+      h("button", { class: "gear", title: "Settings" }, "⚙︎"),
+      h("button", { class: "pill" }, h("span", { class: "dot" }), h("span", { class: "label" }, "Study Buddy")),
+    ),
+  );
   const $ = (sel) => shadow.querySelector(sel);
   const layer = $(".layer");
   const dock = $(".dock");
