@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Study Buddy
 // @description  Tap the green button to have Claude watch the page. It rings the correct option of visible questions and explains why in a small bubble.
-// @version      1.3.0
+// @version      1.4.0
 // @updateURL    https://raw.githubusercontent.com/ryanb080126/Safari-extension/claude/safari-screenshare-extension-gh5ygr/userscript/study-buddy.user.js
 // @downloadURL  https://raw.githubusercontent.com/ryanb080126/Safari-extension/claude/safari-screenshare-extension-gh5ygr/userscript/study-buddy.user.js
 // @match        *://*/*
@@ -11,7 +11,6 @@
 // @grant        GM.setValue
 // @inject-into  content
 // @run-at       document-idle
-// @noframes
 // ==/UserScript==
 
 // iPad / iPhone version of the Study Buddy extension, for the free "Userscripts"
@@ -31,6 +30,16 @@
   const MAX_TEXT = 300;
   const DEBOUNCE_MS = 1500;
   const WATCH_KEY = "studyBuddyWatching"; // sessionStorage: stays on for this tab + site
+  const RECHECK_MS = 4000; // catches questions that load late or change without a page event
+  // Quiz sites like Brightspace often show the quiz inside an embedded frame. The script
+  // runs in every frame: the top page shows the buttons, and each frame reads and marks
+  // its own questions, following the top page's on/off switch.
+  let IS_TOP = true;
+  try {
+    IS_TOP = window.top === window;
+  } catch {
+    IS_TOP = false;
+  }
 
   const DEFAULTS = { apiKey: "", workspaceId: "", model: "claude-opus-5-5", effort: "medium" };
   const settings = { ...DEFAULTS };
@@ -85,6 +94,9 @@ If no questions are visible, return an empty list. Only use ids that appear in t
   let lastFingerprint = "";
   let debounceTimer = null;
   let nextId = 1;
+  let recheckTimer = null;
+  let childStatus = null; // latest useful status reported by an embedded frame
+  const idMap = new Map(); // id -> element (elements inside shadow roots can't be found by querySelector)
   let observer = null;
   let results = [];
 
@@ -236,6 +248,7 @@ If no questions are visible, return an empty list. Only use ids that appear in t
   pill.addEventListener("click", () => setWatching(!watching));
 
   document.documentElement.appendChild(host);
+  if (!IS_TOP) $(".bar").style.display = "none";
 
   // If an older copy of this script is still installed, hide its buttons so only
   // this version shows (older copies can't use personal API keys).
@@ -246,9 +259,50 @@ If no questions are visible, return an empty list. Only use ids that appear in t
   new MutationObserver(removeOldCopies).observe(document.documentElement, { childList: true });
 
   function setStatus(text, kind = "") {
+    if (!IS_TOP) {
+      // Frames have no buttons; report to the top page instead.
+      try {
+        window.top.postMessage({ studyBuddy: "status", text, kind }, "*");
+      } catch {}
+      return;
+    }
+    // Don't let "nothing here" on the top page hide answers found inside a frame.
+    const quiet = kind === "on" && /no questions seen|^Watching$/.test(text);
+    if (quiet && childStatus) ({ text, kind } = childStatus);
     pill.className = `pill ${kind}`;
     pillLabel.textContent = text;
   }
+
+  function tellFrames(message) {
+    for (let i = 0; i < window.frames.length; i++) {
+      try {
+        window.frames[i].postMessage(message, "*");
+      } catch {}
+    }
+  }
+
+  window.addEventListener("message", (event) => {
+    const msg = event.data;
+    if (!msg || typeof msg !== "object" || typeof msg.studyBuddy !== "string") return;
+    if (msg.studyBuddy === "watch" && !IS_TOP && event.source === window.parent) {
+      setWatching(Boolean(msg.on));
+    } else if (msg.studyBuddy === "hello" && event.source) {
+      // A frame just loaded and wants to know whether watching is on.
+      try {
+        event.source.postMessage({ studyBuddy: "watch", on: watching }, "*");
+      } catch {}
+    } else if (msg.studyBuddy === "status" && IS_TOP && event.source !== window) {
+      const text = String(msg.text ?? "").slice(0, 200);
+      const kind = ["on", "busy", "error", ""].includes(msg.kind) ? msg.kind : "";
+      if (!watching) return;
+      const useful = kind === "error" || kind === "busy" || /answer/.test(text);
+      if (useful) {
+        if (kind !== "busy") childStatus = { text, kind };
+        pill.className = `pill ${kind}`;
+        pillLabel.textContent = text;
+      }
+    }
+  });
 
   // ---------- Collect what's on screen ----------
   function isVisible(el) {
@@ -275,28 +329,43 @@ If no questions are visible, return an empty list. Only use ids that appear in t
     return text.slice(0, MAX_TEXT);
   }
 
+  // Walks the page's text, including text inside open shadow roots (Brightspace and
+  // other sites built from web components keep their question text there).
   function collectElements() {
     const seen = new Set();
     const out = [];
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
-      acceptNode(node) {
-        if (!node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
-        const parent = node.parentElement;
-        if (!parent || parent.closest("script,style,noscript,[data-study-buddy]")) return NodeFilter.FILTER_REJECT;
-        return NodeFilter.FILTER_ACCEPT;
-      },
-    });
-    let node;
-    while ((node = walker.nextNode()) && out.length < MAX_ELEMENTS) {
+    idMap.clear();
+
+    function visitText(node) {
+      if (out.length >= MAX_ELEMENTS || !node.nodeValue.trim()) return;
       const parent = node.parentElement;
+      if (!parent || parent.closest("script,style,noscript,template,[data-study-buddy]")) return;
       let el = parent.closest(OPTION_SELECTOR) || parent;
       if (el === document.body || el === document.documentElement) el = parent;
-      if (seen.has(el)) continue;
+      if (seen.has(el)) return;
       seen.add(el);
-      if (!isVisible(el)) continue;
+      if (!isVisible(el)) return;
       const text = textOf(el);
-      if (text) out.push({ id: idFor(el), text });
+      if (!text) return;
+      const id = idFor(el);
+      idMap.set(id, el);
+      out.push({ id, text });
     }
+
+    function walk(root) {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+      let node = walker.currentNode;
+      while (node && out.length < MAX_ELEMENTS) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          visitText(node);
+        } else if (node.shadowRoot && !node.hasAttribute?.("data-study-buddy")) {
+          walk(node.shadowRoot);
+        }
+        node = walker.nextNode();
+      }
+    }
+
+    if (document.body) walk(document.body);
     return out;
   }
 
@@ -397,7 +466,7 @@ If no questions are visible, return an empty list. Only use ids that appear in t
     if (!data) throw new Error(`Unexpected reply from the API (HTTP ${status}).`);
     const apiMessage = data?.error?.message ?? "";
     if (status === 400 && needsWorkspace(data)) {
-      panel.classList.add("open");
+      if (IS_TOP) panel.classList.add("open");
       throw new Error("Needs a workspace ID. Tap ⚙︎ and fill it in (see the setup page).");
     }
     if (status === 401) throw new Error(`Key not accepted: ${apiMessage || "check it under ⚙︎."}`);
@@ -419,7 +488,7 @@ If no questions are visible, return an empty list. Only use ids that appear in t
     if (!watching) return;
     if (!settings.apiKey) {
       setStatus("Tap ⚙︎ to add your API key", "error");
-      panel.classList.add("open");
+      if (IS_TOP) panel.classList.add("open");
       return;
     }
     if (inFlight) {
@@ -488,7 +557,7 @@ If no questions are visible, return an empty list. Only use ids that appear in t
   function showResults(questions) {
     clearResults();
     for (const q of questions) {
-      const answerEl = q.answer_element_id ? document.querySelector(`[${ID_ATTR}="${q.answer_element_id}"]`) : null;
+      const answerEl = q.answer_element_id ? idMap.get(q.answer_element_id) ?? null : null;
       const entry = { q, answerEl, ring: null, bubble: null };
       entry.bubble = makeBubble(q, () => {
         entry.bubble.remove();
@@ -559,9 +628,11 @@ If no questions are visible, return an empty list. Only use ids that appear in t
   function setWatching(on) {
     if (on === watching) return;
     watching = on;
-    try {
-      on ? sessionStorage.setItem(WATCH_KEY, "1") : sessionStorage.removeItem(WATCH_KEY);
-    } catch {}
+    if (IS_TOP) {
+      try {
+        on ? sessionStorage.setItem(WATCH_KEY, "1") : sessionStorage.removeItem(WATCH_KEY);
+      } catch {}
+    }
     if (on) {
       setStatus("Watching", "on");
       observer = new MutationObserver((mutations) => {
@@ -572,8 +643,15 @@ If no questions are visible, return an empty list. Only use ids that appear in t
       addEventListener("scroll", onScrollOrResize, { passive: true, capture: true });
       addEventListener("resize", onScrollOrResize, { passive: true });
       lastFingerprint = "";
+      childStatus = null;
+      recheckTimer = setInterval(() => analyzeNow(), RECHECK_MS);
+      tellFrames({ studyBuddy: "watch", on: true });
       analyzeNow({ force: true });
     } else {
+      clearInterval(recheckTimer);
+      recheckTimer = null;
+      childStatus = null;
+      tellFrames({ studyBuddy: "watch", on: false });
       observer?.disconnect();
       observer = null;
       clearTimeout(debounceTimer);
@@ -584,10 +662,17 @@ If no questions are visible, return an empty list. Only use ids that appear in t
     }
   }
 
-  // Stay on after a reload or when the quiz moves to its next page.
-  let resume = false;
-  try {
-    resume = sessionStorage.getItem(WATCH_KEY) === "1";
-  } catch {}
-  if (resume) setWatching(true);
+  if (IS_TOP) {
+    // Stay on after a reload or when the quiz moves to its next page.
+    let resume = false;
+    try {
+      resume = sessionStorage.getItem(WATCH_KEY) === "1";
+    } catch {}
+    if (resume) setWatching(true);
+  } else {
+    // Ask the page around this frame whether watching is on.
+    try {
+      window.parent.postMessage({ studyBuddy: "hello" }, "*");
+    } catch {}
+  }
 })();
